@@ -1,7 +1,8 @@
-/*
- * Copyright (c) 2016 Intel Corporation
- *
- * SPDX-License-Identifier: Apache-2.0
+/**
+ * @file    main.c
+ * @author  Matthijs Bakker
+ * @date    2026-01-27
+ * @brief   Application entry point
  */
 
 #include <stdio.h>
@@ -9,17 +10,11 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 
-/* 1000 msec = 1 sec */
-#define SLEEP_TIME_MS   1000
+#define SLEEP_TIME_MS   500
 
-/* The devicetree node identifier for the "led0" alias. */
-#define LED0_NODE DT_ALIAS(led1)
+#define LED_NODE DT_ALIAS(led_pin)
 
-/*
- * A build error on this line means your board is unsupported.
- * See the sample documentation for information on how to fix this.
- */
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
 LOG_MODULE_REGISTER(main);
 
