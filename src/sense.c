@@ -6,7 +6,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <nrf.h>
 
@@ -48,7 +47,7 @@ int sense_pin(int pin, uint32_t *value)
 	
 	NRF_DPPIC->TASKS_CHG[0].EN = 1;
 
-	NRF_COMP->PSEL = (0 << COMP_PSEL_PSEL_Pos);
+	NRF_COMP->PSEL = (pin << COMP_PSEL_PSEL_Pos);
 	NRF_COMP->ENABLE = (COMP_ENABLE_ENABLE_Enabled << COMP_ENABLE_ENABLE_Pos);
 	NRF_COMP->TASKS_START = 1;
 

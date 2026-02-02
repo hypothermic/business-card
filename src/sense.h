@@ -8,16 +8,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define SENSE_CALIBRATION_RUNS          8
-#define SENSE_CALIBRATION_THRESHOLD     30
-#define SENSE_DEBOUNCING_THRESHOLD      3
-
-typedef struct {
-    uint32_t calibration_floor;
-    uint8_t debouncing_streak;
-    bool pressed;
-} sense_pin_data_t;
-
 /**
  * Blocking function to measure capacitance on the specified pin.
  * 
