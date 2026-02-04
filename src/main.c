@@ -16,11 +16,6 @@
 #define CALIBRATION_THRESHOLD     1.2
 #define DEBOUNCING_THRESHOLD      5
 
-#define KEY_MUTE			0x7f
-#define KEY_VOLUME_UP		0x80
-#define KEY_VOLUME_DOWN		0x81
-#define KEY_PAUSE			0x82
-
 typedef struct {
 	struct gpio_dt_spec led_gpio;
 	int analog_input;
@@ -189,6 +184,8 @@ int main(void)
 	}
 
 	k_thread_start(sampling_thread_id);
+	
+	LOG_INF("Main loop");
 
 	while (true) {
 		gpio_pin_set_dt(&status_led, 0);

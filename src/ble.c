@@ -80,15 +80,15 @@ static void advertising_start(void)
 
 	if (err) {
 		if (err == -EALREADY) {
-			LOG_INF("Advertising continued\n");
+			LOG_INF("Advertising continued");
 		} else {
-			LOG_ERR("Advertising failed to start (err %d)\n", err);
+			LOG_ERR("Advertising failed to start (err %d)", err);
 		}
 
 		return;
 	}
 
-	LOG_INF("Advertising successfully started\n");
+	LOG_INF("Advertising successfully started");
 }
 
 static void pairing_process(struct k_work *work)
@@ -118,16 +118,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (err) {
-		LOG_ERR("Failed to connect to %s 0x%02x %s\n", addr, err, bt_hci_err_to_str(err));
+		LOG_ERR("Failed to connect to %s 0x%02x %s", addr, err, bt_hci_err_to_str(err));
 		return;
 	}
 
-	LOG_INF("Connected %s\n", addr);
+	LOG_INF("Connected %s", addr);
 
 	err = bt_hids_connected(&hids_obj, conn);
 
 	if (err) {
-		LOG_ERR("Failed to notify HID service about connection\n");
+		LOG_ERR("Failed to notify HID service about connection");
 		return;
 	}
 
@@ -155,12 +155,12 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_INF("Disconnected from %s, reason 0x%02x %s\n", addr, reason, bt_hci_err_to_str(reason));
+	LOG_INF("Disconnected from %s, reason 0x%02x %s", addr, reason, bt_hci_err_to_str(reason));
 
 	err = bt_hids_disconnected(&hids_obj, conn);
 
 	if (err) {
-		LOG_ERR("Failed to notify HID service about disconnection\n");
+		LOG_ERR("Failed to notify HID service about disconnection");
 	}
 
 	for (size_t i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
@@ -184,11 +184,11 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (err) {
-		LOG_ERR("Security failed: %s level %u err %d %s\n",
+		LOG_ERR("Security failed: %s level %u err %d %s",
 			    addr, level, err, bt_security_err_to_str(err));
 	}
 
-	LOG_INF("Security changed: %s level %u\n", addr, level);
+	LOG_INF("Security changed: %s level %u", addr, level);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -204,12 +204,12 @@ static void hids_outp_rep_handler(struct bt_hids_rep *rep,
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	if (!write) {
-		LOG_INF("Output report read\n");
+		LOG_INF("Output report read");
 		return;
-	};
+	}
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	LOG_INF("Output report has been received %s\n", addr);
+	LOG_INF("Output report has been received %s", addr);
 }
 
 static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
@@ -219,12 +219,12 @@ static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	if (!write) {
-		LOG_INF("Output report read\n");
+		LOG_INF("Output report read");
 		return;
-	};
+	}
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	LOG_INF("Boot Keyboard Output report has been received %s\n", addr);
+	LOG_INF("Boot Keyboard Output report has been received %s", addr);
 }
 
 static void hids_pm_evt_handler(enum bt_hids_pm_evt evt,
@@ -248,12 +248,12 @@ static void hids_pm_evt_handler(enum bt_hids_pm_evt evt,
 
 	switch (evt) {
 		case BT_HIDS_PM_EVT_BOOT_MODE_ENTERED:
-			LOG_INF("Boot mode entered %s\n", addr);
+			LOG_INF("Boot mode entered %s", addr);
 			conn_mode[i].in_boot_mode = true;
 			break;
 
 		case BT_HIDS_PM_EVT_REPORT_MODE_ENTERED:
-			LOG_INF("Report mode entered %s\n", addr);
+			LOG_INF("Report mode entered %s", addr);
 			conn_mode[i].in_boot_mode = false;
 			break;
 		default:
@@ -361,7 +361,7 @@ static void hid_init(void)
 	hids_init_obj.pm_evt_handler = hids_pm_evt_handler;
 
 	err = bt_hids_init(&hids_obj, &hids_init_obj);
-	__ASSERT(err == 0, "HIDS initialization failed\n");
+	__ASSERT(err == 0, "HIDS initialization failed");
 }
 
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
@@ -370,7 +370,7 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
+	LOG_INF("Passkey for %s: %06u", addr, passkey);
 }
 
 static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
@@ -385,7 +385,7 @@ static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
 	err = k_msgq_put(&mitm_queue, &pairing_data, K_NO_WAIT);
 
 	if (err) {
-		LOG_ERR("Pairing queue is full. Purge previous data.\n");
+		LOG_ERR("Pairing queue is full. Purge previous data.");
 	}
 
 	/* In the case of multiple pairing requests, trigger
@@ -405,7 +405,7 @@ static void auth_cancel(struct bt_conn *conn)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_INF("Pairing cancelled: %s\n", addr);
+	LOG_INF("Pairing cancelled: %s", addr);
 }
 
 static void pairing_complete(struct bt_conn *conn, bool bonded)
@@ -414,7 +414,7 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_INF("Pairing completed: %s, bonded: %d\n", addr, bonded);
+	LOG_INF("Pairing completed: %s, bonded: %d", addr, bonded);
 }
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
@@ -433,7 +433,7 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_ERR("Pairing failed conn: %s, reason %d %s\n",
+	LOG_ERR("Pairing failed conn: %s, reason %d %s",
 		    addr, reason, bt_security_err_to_str(reason));
 }
 
@@ -455,7 +455,7 @@ static int media_report_send(ble_hid_key_t pressed_keys)
 
 	data[0] = pressed_keys;
 	
-	LOG_HEXDUMP_INF(data, INPUT_REPORT_CONSUMER_MAX_LEN, "Media data");
+	LOG_HEXDUMP_INF(data, INPUT_REPORT_CONSUMER_MAX_LEN, "Media controls report");
 
 	for (i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
 		if (conn_mode[i].conn) {
@@ -467,7 +467,7 @@ static int media_report_send(ble_hid_key_t pressed_keys)
 			err = bt_hids_inp_rep_send(&hids_obj, conn_mode[i].conn, INPUT_REP_CONSUMER_IDX, data, sizeof(data), NULL);
 
 			if (err) {
-				LOG_ERR("Key report send error: %d\n", err);
+				LOG_ERR("Key report send error: %d", err);
 				return err;
 			}
 		}
@@ -489,10 +489,10 @@ static void num_comp_reply(bool accept)
 
 	if (accept) {
 		bt_conn_auth_passkey_confirm(conn);
-		LOG_INF("Numeric Match, conn %p\n", conn);
+		LOG_INF("Numeric Match, conn %p", conn);
 	} else {
 		bt_conn_auth_cancel(conn);
-		LOG_INF("Numeric Reject, conn %p\n", conn);
+		LOG_INF("Numeric Reject, conn %p", conn);
 	}
 
 	bt_conn_unref(pairing_data.conn);
@@ -538,14 +538,14 @@ int ble_init(void)
 	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
 
 	if (err) {
-		LOG_ERR("Failed to register authorization callbacks.\n");
+		LOG_ERR("Failed to register authorization callbacks.");
 		return 0;
 	}
 
 	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
 
 	if (err) {
-		LOG_ERR("Failed to register authorization info callbacks.\n");
+		LOG_ERR("Failed to register authorization info callbacks.");
 		return 0;
 	}
 
@@ -554,11 +554,11 @@ int ble_init(void)
 	err = bt_enable(NULL);
 
 	if (err) {
-		LOG_ERR("Bluetooth init failed (err %d)\n", err);
+		LOG_ERR("Bluetooth init failed (err %d)", err);
 		return 0;
 	}
 
-	LOG_INF("Bluetooth initialized\n");
+	LOG_INF("Bluetooth initialized");
 
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		settings_load();
