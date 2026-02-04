@@ -17,10 +17,10 @@
 #define CALIBRATION_THRESHOLD     1.2
 #define DEBOUNCING_THRESHOLD      5
 
-#define KEY_PAUSE			0x0e
-#define KEY_MUTE			0x0f
-#define KEY_VOLUME_UP		0x0b
-#define KEY_VOLUME_DOWN		0x50
+#define KEY_MUTE			0x7f
+#define KEY_VOLUME_UP		0x80
+#define KEY_VOLUME_DOWN		0x81
+#define KEY_PAUSE			0x82
 
 typedef struct {
 	struct gpio_dt_spec led_gpio;
@@ -48,7 +48,7 @@ static touchpad_data_t touchpad_data[] = {
 	{
 		.led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios),
 		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
-		.emulated_key = KEY_PAUSE,
+		.emulated_key = KEY_MUTE,
 	},
 };
 

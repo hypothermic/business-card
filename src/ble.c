@@ -41,7 +41,8 @@ static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
 #define OUTPUT_REPORT_MAX_LEN            1
 #define OUTPUT_REPORT_BIT_MASK_CAPS_LOCK 0x02
-#define INPUT_REP_KEYS_REF_ID            0
+#define INPUT_REP_KEYS_REF_ID            1
+#define INPUT_REP_CONSUMER_REF_ID            2
 #define OUTPUT_REP_KEYS_REF_ID           0
 #define MODIFIER_KEY_POS                 0
 #define SHIFT_KEY_CODE                   0x02
@@ -103,13 +104,17 @@ enum {
  * report ID.
  */
 enum {
-	INPUT_REP_KEYS_IDX = 0
+	INPUT_REP_KEYS_IDX = 0,
+	INPUT_REP_CONSUMER_IDX = 1,
 };
+
+#define CONSUMER_REPORT_MAX_LEN 1
 
 /* HIDS instance. */
 BT_HIDS_DEF(hids_obj,
 	    OUTPUT_REPORT_MAX_LEN,
-	    INPUT_REPORT_KEYS_MAX_LEN);
+	    INPUT_REPORT_KEYS_MAX_LEN,
+		CONSUMER_REPORT_MAX_LEN);
 
 static volatile bool is_adv;
 
@@ -130,23 +135,21 @@ static struct conn_mode {
 	bool in_boot_mode;
 } conn_mode[CONFIG_BT_HIDS_MAX_CLIENT_COUNT];
 
-static const uint8_t hello_world_str[] = {
-	0x0b,	/* Key h */
-	0x08,	/* Key e */
-	0x0f,	/* Key l */
-	0x0f,	/* Key l */
-	0x12,	/* Key o */
-	0x28,	/* Key Return */
-};
-
-static const uint8_t shift_key[] = { 225 };
-
 /* Current report status
  */
 static struct keyboard_state {
 	uint8_t ctrl_keys_state; /* Current keys state */
 	uint8_t keys_state[KEY_PRESS_MAX];
 } hid_keyboard_state;
+
+#define MEDIA_STATE_MUTE        (1 << 0)
+#define MEDIA_STATE_PLAY_PAUSE  (1 << 1)
+#define MEDIA_STATE_VOLUME_UP   (1 << 2)
+#define MEDIA_STATE_VOLUME_DOWN (1 << 3)
+
+static struct media_state {
+	uint8_t report;
+} hid_media_state;
 
 static struct k_work pairing_work;
 struct pairing_data_mitm {
@@ -436,7 +439,30 @@ static void hid_init(void)
 		0x91, 0x01,       /* Output (Data, Variable, Absolute), */
 				  /* Led report padding */
 
-		0xC0              /* End Collection (Application) */
+		0xC0,             /* End Collection (Application) */
+
+		0x05, 0x0C,        // Usage Page (Consumer)
+		0x09, 0x01,        // Usage (Consumer Control)
+		0xA1, 0x01,        // Collection (Application)
+		0x85, 0x02,        //   Report ID (2)
+
+		0x15, 0x00,        //   Logical Minimum (0)
+		0x25, 0x01,        //   Logical Maximum (1)
+
+		0x09, 0xE2,        //   Usage (Mute)
+		0x09, 0xCD,        //   Usage (Play/Pause)
+		0x09, 0xE9,        //   Usage (Volume Increment)
+		0x09, 0xEA,        //   Usage (Volume Decrement)
+
+		0x75, 0x01,        //   Report Size (1)
+		0x95, 0x04,        //   Report Count (4)
+		0x81, 0x02,        //   Input (Data,Var,Abs)
+
+		0x75, 0x01,        //   Report Size (1)
+		0x95, 0x04,        //   Report Count (4)
+		0x81, 0x01,        //   Input (Const,Arr,Abs) ; padding
+
+		0xC0               // End Collection
 	};
 
 	hids_init_obj.rep_map.data = report_map;
@@ -444,13 +470,18 @@ static void hid_init(void)
 
 	hids_init_obj.info.bcd_hid = BASE_USB_HID_SPEC_VERSION;
 	hids_init_obj.info.b_country_code = 0x00;
-	hids_init_obj.info.flags = (BT_HIDS_REMOTE_WAKE |
-				    BT_HIDS_NORMALLY_CONNECTABLE);
+	hids_init_obj.info.flags = (BT_HIDS_REMOTE_WAKE | BT_HIDS_NORMALLY_CONNECTABLE);
 
 	hids_inp_rep =
 		&hids_init_obj.inp_rep_group_init.reports[INPUT_REP_KEYS_IDX];
 	hids_inp_rep->size = INPUT_REPORT_KEYS_MAX_LEN;
 	hids_inp_rep->id = INPUT_REP_KEYS_REF_ID;
+	hids_init_obj.inp_rep_group_init.cnt++;
+
+	hids_inp_rep =
+		&hids_init_obj.inp_rep_group_init.reports[INPUT_REP_CONSUMER_IDX];
+	hids_inp_rep->size = CONSUMER_REPORT_MAX_LEN;
+	hids_inp_rep->id = INPUT_REP_CONSUMER_REF_ID;
 	hids_init_obj.inp_rep_group_init.cnt++;
 
 	hids_outp_rep =
@@ -596,6 +627,42 @@ static int key_report_con_send(const struct keyboard_state *state,
 	return err;
 }
 
+static int media_report_con_send(const struct media_state *state, struct bt_conn *conn)
+{
+	int err = 0;
+	uint8_t data[CONSUMER_REPORT_MAX_LEN];
+
+	data[0] = state->report;
+
+	LOG_HEXDUMP_INF(data, INPUT_REPORT_KEYS_MAX_LEN, "Media data");
+
+	err = bt_hids_inp_rep_send(&hids_obj, conn, INPUT_REP_CONSUMER_IDX, data, sizeof(data), NULL);
+
+	return err;
+}
+
+static int media_report_send(void)
+{
+	for (size_t i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
+		if (conn_mode[i].conn) {
+			if (conn_mode[i].in_boot_mode) {
+				LOG_WRN("Connection %d in boot mode, skipping media report", i);
+				continue;
+			}
+
+			int err;
+
+			err = media_report_con_send(&hid_media_state, conn_mode[i].conn);
+
+			if (err) {
+				printk("Key report send error: %d\n", err);
+				return err;
+			}
+		}
+	}
+	return 0;
+}
+
 /** @brief Function process and send keyboard state to all active connections
  *
  * Function process global keyboard state and send it to all connected
@@ -723,6 +790,61 @@ static int hid_buttons_release(const uint8_t *keys, size_t cnt)
 	return key_report_send();
 }
 
+static int press_button(uint8_t scancode)
+{
+	if (scancode > 0x65) {
+		switch (scancode) {
+			case 0x7f:
+				hid_media_state.report |= MEDIA_STATE_MUTE;
+				break;
+			case 0x80:
+				hid_media_state.report |= MEDIA_STATE_VOLUME_UP;
+				break;
+			case 0x81:
+				hid_media_state.report |= MEDIA_STATE_VOLUME_DOWN;
+				break;
+			case 0x82:
+				hid_media_state.report |= MEDIA_STATE_PLAY_PAUSE;
+				break;
+			default:
+				LOG_ERR("Unknown media scancode %d", scancode);
+				return 1;
+		}
+
+		return media_report_send();
+	} else {
+		return hid_buttons_press(&scancode, 1);
+	}
+}
+
+
+static int release_button(uint8_t scancode)
+{
+	if (scancode > 0x65) {
+		switch (scancode) {
+			case 0x7f:
+				hid_media_state.report &= ~(MEDIA_STATE_MUTE);
+				break;
+			case 0x80:
+				hid_media_state.report &= ~(MEDIA_STATE_VOLUME_UP);
+				break;
+			case 0x81:
+				hid_media_state.report &= ~(MEDIA_STATE_VOLUME_DOWN);
+				break;
+			case 0x82:
+				hid_media_state.report &= ~(MEDIA_STATE_PLAY_PAUSE);
+				break;
+			default:
+				LOG_ERR("Unknown media scancode %d", scancode);
+				return 1;
+		}
+
+		return media_report_send();
+	} else {
+		return hid_buttons_release(&scancode, 1);
+	}
+}
+
 static void num_comp_reply(bool accept)
 {
 	struct pairing_data_mitm pairing_data;
@@ -842,10 +964,10 @@ static void button_thread(void)
 
 		if (input.button_pressed) {
         	LOG_INF("Pressing key %02x", button);
-			hid_buttons_press(&button, 1);
+			press_button(button);
 		} else {
        		LOG_INF("Releasing key %02x", button);
-			hid_buttons_release(&button, 1);
+			release_button(button);
 		}
     }
 }
