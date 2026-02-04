@@ -2,24 +2,15 @@
  * @file    ble.c
  * @author  Matthijs Bakker
  * @date    2026-02-03
- * @brief   BLE Keyboard HID
+ * @brief   BLE Keyboard HID implementation
+ * 
+ * Adapted from 'sdk-nrf/peripheral_hids_keyboard', added support for media keys.
  */
 
 #include "ble.h"
 
-#include <zephyr/types.h>
-#include <stddef.h>
-#include <string.h>
-#include <errno.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
-#include <soc.h>
-#include <assert.h>
-#include <zephyr/spinlock.h>
-
 #include <zephyr/settings/settings.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
@@ -30,93 +21,20 @@
 
 #include <bluetooth/services/hids.h>
 
-#define LED_NODE		DT_ALIAS(led_pin)
+#define BASE_USB_HID_SPEC_VERSION   		0x0101
+#define INPUT_REPORT_KEYS_MAX_LEN 			(1 + 1 + 6) // modifiers + reserved + keys[6]
+#define INPUT_REPORT_CONSUMER_MAX_LEN		1
+#define OUTPUT_REPORT_MAX_LEN            	1
 
-static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
+// Report IDs
+#define INPUT_REP_KEYS_REF_ID            	1
+#define INPUT_REP_CONSUMER_REF_ID           2
+#define OUTPUT_REP_KEYS_REF_ID           	0
 
-#define DEVICE_NAME     CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
-
-#define BASE_USB_HID_SPEC_VERSION   0x0101
-
-#define OUTPUT_REPORT_MAX_LEN            1
-#define OUTPUT_REPORT_BIT_MASK_CAPS_LOCK 0x02
-#define INPUT_REP_KEYS_REF_ID            1
-#define INPUT_REP_CONSUMER_REF_ID            2
-#define OUTPUT_REP_KEYS_REF_ID           0
-#define MODIFIER_KEY_POS                 0
-#define SHIFT_KEY_CODE                   0x02
-#define SCAN_CODE_POS                    2
-#define KEYS_MAX_LEN                    (INPUT_REPORT_KEYS_MAX_LEN - SCAN_CODE_POS)
-
-#define ADV_LED_BLINK_INTERVAL  1000
-
-#define KEY_TEXT_MASK  (1 << 0)
-#define KEY_SHIFT_MASK (1 << 1)
-#define KEY_ADV_MASK   (1 << 2)
-
-/* Key used to accept or reject passkey value */
-#define KEY_PAIRING_ACCEPT (1 << 0)
-#define KEY_PAIRING_REJECT (1 << 1)
-
-/* HIDs queue elements. */
-#define HIDS_QUEUE_SIZE 10
-
-/* ********************* */
-/* Buttons configuration */
-
-/* Note: The configuration below is the same as BOOT mode configuration
- * This simplifies the code as the BOOT mode is the same as REPORT mode.
- * Changing this configuration would require separate implementation of
- * BOOT mode report generation.
- */
-#define KEY_CTRL_CODE_MIN 224 /* Control key codes - required 8 of them */
-#define KEY_CTRL_CODE_MAX 231 /* Control key codes - required 8 of them */
-#define KEY_CODE_MIN      0   /* Normal key codes */
-#define KEY_CODE_MAX      101 /* Normal key codes */
-#define KEY_PRESS_MAX     6   /* Maximum number of non-control keys
-			       * pressed simultaneously
-			       */
-
-/* Number of bytes in key report
- *
- * 1B - control keys
- * 1B - reserved
- * rest - non-control keys
- */
-#define INPUT_REPORT_KEYS_MAX_LEN (1 + 1 + KEY_PRESS_MAX)
-
-/* Current report map construction requires exactly 8 buttons */
-BUILD_ASSERT((KEY_CTRL_CODE_MAX - KEY_CTRL_CODE_MIN) + 1 == 8);
-
-/* OUT report internal indexes.
- *
- * This is a position in internal report table and is not related to
- * report ID.
- */
-enum {
-	OUTPUT_REP_KEYS_IDX = 0
-};
-
-/* INPUT report internal indexes.
- *
- * This is a position in internal report table and is not related to
- * report ID.
- */
-enum {
-	INPUT_REP_KEYS_IDX = 0,
-	INPUT_REP_CONSUMER_IDX = 1,
-};
-
-#define CONSUMER_REPORT_MAX_LEN 1
-
-/* HIDS instance. */
-BT_HIDS_DEF(hids_obj,
-	    OUTPUT_REPORT_MAX_LEN,
-	    INPUT_REPORT_KEYS_MAX_LEN,
-		CONSUMER_REPORT_MAX_LEN);
-
-static volatile bool is_adv;
+// Internal report table indexes
+#define OUTPUT_REP_KEYS_IDX					0
+#define INPUT_REP_KEYS_IDX					0
+#define INPUT_REP_CONSUMER_IDX				1
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_GAP_APPEARANCE,
@@ -127,7 +45,7 @@ static const struct bt_data ad[] = {
 };
 
 static const struct bt_data sd[] = {
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, (sizeof(CONFIG_BT_DEVICE_NAME) - 1)),
 };
 
 static struct conn_mode {
@@ -135,59 +53,42 @@ static struct conn_mode {
 	bool in_boot_mode;
 } conn_mode[CONFIG_BT_HIDS_MAX_CLIENT_COUNT];
 
-/* Current report status
- */
-static struct keyboard_state {
-	uint8_t ctrl_keys_state; /* Current keys state */
-	uint8_t keys_state[KEY_PRESS_MAX];
-} hid_keyboard_state;
-
-#define MEDIA_STATE_MUTE        (1 << 0)
-#define MEDIA_STATE_PLAY_PAUSE  (1 << 1)
-#define MEDIA_STATE_VOLUME_UP   (1 << 2)
-#define MEDIA_STATE_VOLUME_DOWN (1 << 3)
-
-static struct media_state {
-	uint8_t report;
-} hid_media_state;
-
 static struct k_work pairing_work;
+
 struct pairing_data_mitm {
 	struct bt_conn *conn;
 	unsigned int passkey;
 };
 
-K_MSGQ_DEFINE(mitm_queue,
-	      sizeof(struct pairing_data_mitm),
-	      CONFIG_BT_HIDS_MAX_CLIENT_COUNT,
-	      4);
+K_MSGQ_DEFINE(mitm_queue, sizeof(struct pairing_data_mitm), CONFIG_BT_HIDS_MAX_CLIENT_COUNT, 4);
+K_MSGQ_DEFINE(input_queue, sizeof(ble_key_input_t), 10, 1);
 
-          
+BT_HIDS_DEF(hids_obj, OUTPUT_REPORT_MAX_LEN, INPUT_REPORT_KEYS_MAX_LEN, INPUT_REPORT_CONSUMER_MAX_LEN);
+
 LOG_MODULE_REGISTER(ble);
 
 static void advertising_start(void)
 {
-	int err;
 	const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 						BT_LE_ADV_OPT_CONN,
 						BT_GAP_ADV_FAST_INT_MIN_1,
 						BT_GAP_ADV_FAST_INT_MAX_1,
 						NULL);
+	int err;
 
-	err = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd,
-			      ARRAY_SIZE(sd));
+	err = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+
 	if (err) {
 		if (err == -EALREADY) {
-			printk("Advertising continued\n");
+			LOG_INF("Advertising continued\n");
 		} else {
-			printk("Advertising failed to start (err %d)\n", err);
+			LOG_ERR("Advertising failed to start (err %d)\n", err);
 		}
 
 		return;
 	}
 
-	is_adv = true;
-	printk("Advertising successfully started\n");
+	LOG_INF("Advertising successfully started\n");
 }
 
 static void pairing_process(struct k_work *work)
@@ -198,6 +99,7 @@ static void pairing_process(struct k_work *work)
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	err = k_msgq_peek(&mitm_queue, &pairing_data);
+
 	if (err) {
 		return;
 	}
@@ -205,15 +107,9 @@ static void pairing_process(struct k_work *work)
 	bt_addr_le_to_str(bt_conn_get_dst(pairing_data.conn),
 			  addr, sizeof(addr));
 
-	printk("Passkey for %s: %06u\n", addr, pairing_data.passkey);
-
-	if (IS_ENABLED(CONFIG_SOC_SERIES_NRF54H) || IS_ENABLED(CONFIG_SOC_SERIES_NRF54L)) {
-		printk("Press Button 0 to confirm, Button 1 to reject.\n");
-	} else {
-		printk("Press Button 1 to confirm, Button 2 to reject.\n");
-	}
+	LOG_INF("Passkey for %s: %06u", addr, pairing_data.passkey);
+	LOG_INF("Hold VOLUME UP + VOLUME DOWN simultaneously for 3 seconds to pair.");
 }
-
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -222,16 +118,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (err) {
-		printk("Failed to connect to %s 0x%02x %s\n", addr, err, bt_hci_err_to_str(err));
+		LOG_ERR("Failed to connect to %s 0x%02x %s\n", addr, err, bt_hci_err_to_str(err));
 		return;
 	}
 
-	printk("Connected %s\n", addr);
+	LOG_INF("Connected %s\n", addr);
 
 	err = bt_hids_connected(&hids_obj, conn);
 
 	if (err) {
-		printk("Failed to notify HID service about connection\n");
+		LOG_ERR("Failed to notify HID service about connection\n");
 		return;
 	}
 
@@ -249,10 +145,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 			return;
 		}
 	}
-
-	is_adv = false;
 }
-
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
@@ -262,12 +155,12 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Disconnected from %s, reason 0x%02x %s\n", addr, reason, bt_hci_err_to_str(reason));
+	LOG_INF("Disconnected from %s, reason 0x%02x %s\n", addr, reason, bt_hci_err_to_str(reason));
 
 	err = bt_hids_disconnected(&hids_obj, conn);
 
 	if (err) {
-		printk("Failed to notify HID service about disconnection\n");
+		LOG_ERR("Failed to notify HID service about disconnection\n");
 	}
 
 	for (size_t i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
@@ -283,7 +176,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	advertising_start();
 }
 
-
 static void security_changed(struct bt_conn *conn, bt_security_t level,
 			     enum bt_security_err err)
 {
@@ -291,12 +183,12 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	if (!err) {
-		printk("Security changed: %s level %u\n", addr, level);
-	} else {
-		printk("Security failed: %s level %u err %d %s\n", addr, level, err,
-		       bt_security_err_to_str(err));
+	if (err) {
+		LOG_ERR("Security failed: %s level %u err %d %s\n",
+			    addr, level, err, bt_security_err_to_str(err));
 	}
+
+	LOG_INF("Security changed: %s level %u\n", addr, level);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -305,16 +197,6 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.security_changed = security_changed,
 };
 
-
-static void caps_lock_handler(const struct bt_hids_rep *rep)
-{
-	uint8_t report_val = ((*rep->data) & OUTPUT_REPORT_BIT_MASK_CAPS_LOCK) ?
-			  1 : 0;
-
-    printk("Caps lock? %d", report_val);
-}
-
-
 static void hids_outp_rep_handler(struct bt_hids_rep *rep,
 				  struct bt_conn *conn,
 				  bool write)
@@ -322,15 +204,13 @@ static void hids_outp_rep_handler(struct bt_hids_rep *rep,
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	if (!write) {
-		printk("Output report read\n");
+		LOG_INF("Output report read\n");
 		return;
 	};
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	printk("Output report has been received %s\n", addr);
-	caps_lock_handler(rep);
+	LOG_INF("Output report has been received %s\n", addr);
 }
-
 
 static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
 					  struct bt_conn *conn,
@@ -339,15 +219,13 @@ static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	if (!write) {
-		printk("Output report read\n");
+		LOG_INF("Output report read\n");
 		return;
 	};
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	printk("Boot Keyboard Output report has been received %s\n", addr);
-	caps_lock_handler(rep);
+	LOG_INF("Boot Keyboard Output report has been received %s\n", addr);
 }
-
 
 static void hids_pm_evt_handler(enum bt_hids_pm_evt evt,
 				struct bt_conn *conn)
@@ -362,45 +240,40 @@ static void hids_pm_evt_handler(enum bt_hids_pm_evt evt,
 	}
 
 	if (i >= CONFIG_BT_HIDS_MAX_CLIENT_COUNT) {
-		printk("Cannot find connection handle when processing PM");
+		LOG_ERR("Cannot find connection handle when processing PM");
 		return;
 	}
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	switch (evt) {
-	case BT_HIDS_PM_EVT_BOOT_MODE_ENTERED:
-		printk("Boot mode entered %s\n", addr);
-		conn_mode[i].in_boot_mode = true;
-		break;
+		case BT_HIDS_PM_EVT_BOOT_MODE_ENTERED:
+			LOG_INF("Boot mode entered %s\n", addr);
+			conn_mode[i].in_boot_mode = true;
+			break;
 
-	case BT_HIDS_PM_EVT_REPORT_MODE_ENTERED:
-		printk("Report mode entered %s\n", addr);
-		conn_mode[i].in_boot_mode = false;
-		break;
-
-	default:
-		break;
+		case BT_HIDS_PM_EVT_REPORT_MODE_ENTERED:
+			LOG_INF("Report mode entered %s\n", addr);
+			conn_mode[i].in_boot_mode = false;
+			break;
+		default:
+			break;
 	}
 }
 
-
 static void hid_init(void)
 {
-	int err;
 	struct bt_hids_init_param    hids_init_obj = { 0 };
 	struct bt_hids_inp_rep       *hids_inp_rep;
 	struct bt_hids_outp_feat_rep *hids_outp_rep;
+	int err;
 
 	static const uint8_t report_map[] = {
 		0x05, 0x01,       /* Usage Page (Generic Desktop) */
 		0x09, 0x06,       /* Usage (Keyboard) */
 		0xA1, 0x01,       /* Collection (Application) */
 
-		/* Keys */
-#if INPUT_REP_KEYS_REF_ID
-		0x85, INPUT_REP_KEYS_REF_ID,
-#endif
+		0x85, 0x01,       /* Report ID 1: Keyboard */
 		0x05, 0x07,       /* Usage Page (Key Codes) */
 		0x19, 0xe0,       /* Usage Minimum (224) */
 		0x29, 0xe7,       /* Usage Maximum (231) */
@@ -418,34 +291,29 @@ static void hid_init(void)
 		0x75, 0x08,       /* Report Size (8) */
 		0x15, 0x00,       /* Logical Minimum (0) */
 		0x25, 0x65,       /* Logical Maximum (101) */
+		
 		0x05, 0x07,       /* Usage Page (Key codes) */
 		0x19, 0x00,       /* Usage Minimum (0) */
 		0x29, 0x65,       /* Usage Maximum (101) */
 		0x81, 0x00,       /* Input (Data, Array) Key array(6 bytes) */
 
-		/* LED */
-#if OUTPUT_REP_KEYS_REF_ID
-		0x85, OUTPUT_REP_KEYS_REF_ID,
-#endif
 		0x95, 0x05,       /* Report Count (5) */
 		0x75, 0x01,       /* Report Size (1) */
 		0x05, 0x08,       /* Usage Page (Page# for LEDs) */
 		0x19, 0x01,       /* Usage Minimum (1) */
 		0x29, 0x05,       /* Usage Maximum (5) */
 		0x91, 0x02,       /* Output (Data, Variable, Absolute), */
-				  /* Led report */
 		0x95, 0x01,       /* Report Count (1) */
 		0x75, 0x03,       /* Report Size (3) */
 		0x91, 0x01,       /* Output (Data, Variable, Absolute), */
-				  /* Led report padding */
 
 		0xC0,             /* End Collection (Application) */
 
 		0x05, 0x0C,        // Usage Page (Consumer)
 		0x09, 0x01,        // Usage (Consumer Control)
 		0xA1, 0x01,        // Collection (Application)
-		0x85, 0x02,        //   Report ID (2)
 
+		0x85, 0x02,        /* Report ID 2: Consumer */
 		0x15, 0x00,        //   Logical Minimum (0)
 		0x25, 0x01,        //   Logical Maximum (1)
 
@@ -472,20 +340,17 @@ static void hid_init(void)
 	hids_init_obj.info.b_country_code = 0x00;
 	hids_init_obj.info.flags = (BT_HIDS_REMOTE_WAKE | BT_HIDS_NORMALLY_CONNECTABLE);
 
-	hids_inp_rep =
-		&hids_init_obj.inp_rep_group_init.reports[INPUT_REP_KEYS_IDX];
+	hids_inp_rep = &hids_init_obj.inp_rep_group_init.reports[INPUT_REP_KEYS_IDX];
 	hids_inp_rep->size = INPUT_REPORT_KEYS_MAX_LEN;
 	hids_inp_rep->id = INPUT_REP_KEYS_REF_ID;
 	hids_init_obj.inp_rep_group_init.cnt++;
 
-	hids_inp_rep =
-		&hids_init_obj.inp_rep_group_init.reports[INPUT_REP_CONSUMER_IDX];
-	hids_inp_rep->size = CONSUMER_REPORT_MAX_LEN;
+	hids_inp_rep = &hids_init_obj.inp_rep_group_init.reports[INPUT_REP_CONSUMER_IDX];
+	hids_inp_rep->size = INPUT_REPORT_CONSUMER_MAX_LEN;
 	hids_inp_rep->id = INPUT_REP_CONSUMER_REF_ID;
 	hids_init_obj.inp_rep_group_init.cnt++;
 
-	hids_outp_rep =
-		&hids_init_obj.outp_rep_group_init.reports[OUTPUT_REP_KEYS_IDX];
+	hids_outp_rep = &hids_init_obj.outp_rep_group_init.reports[OUTPUT_REP_KEYS_IDX];
 	hids_outp_rep->size = OUTPUT_REPORT_MAX_LEN;
 	hids_outp_rep->id = OUTPUT_REP_KEYS_REF_ID;
 	hids_outp_rep->handler = hids_outp_rep_handler;
@@ -505,7 +370,7 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Passkey for %s: %06u\n", addr, passkey);
+	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
 }
 
 static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
@@ -518,8 +383,9 @@ static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
 	pairing_data.passkey = passkey;
 
 	err = k_msgq_put(&mitm_queue, &pairing_data, K_NO_WAIT);
+
 	if (err) {
-		printk("Pairing queue is full. Purge previous data.\n");
+		LOG_ERR("Pairing queue is full. Purge previous data.\n");
 	}
 
 	/* In the case of multiple pairing requests, trigger
@@ -533,16 +399,14 @@ static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
 	}
 }
 
-
 static void auth_cancel(struct bt_conn *conn)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Pairing cancelled: %s\n", addr);
+	LOG_INF("Pairing cancelled: %s\n", addr);
 }
-
 
 static void pairing_complete(struct bt_conn *conn, bool bonded)
 {
@@ -550,9 +414,8 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Pairing completed: %s, bonded: %d\n", addr, bonded);
+	LOG_INF("Pairing completed: %s, bonded: %d\n", addr, bonded);
 }
-
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 {
@@ -570,8 +433,8 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Pairing failed conn: %s, reason %d %s\n", addr, reason,
-	       bt_security_err_to_str(reason));
+	LOG_ERR("Pairing failed conn: %s, reason %d %s\n",
+		    addr, reason, bt_security_err_to_str(reason));
 }
 
 static struct bt_conn_auth_cb conn_auth_callbacks = {
@@ -585,264 +448,32 @@ static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_failed = pairing_failed
 };
 
-
-/** @brief Function process keyboard state and sends it
- *
- *  @param pstate     The state to be sent
- *  @param boot_mode  Information if boot mode protocol is selected.
- *  @param conn       Connection handler
- *
- *  @return 0 on success or negative error code.
- */
-static int key_report_con_send(const struct keyboard_state *state,
-			bool boot_mode,
-			struct bt_conn *conn)
+static int media_report_send(ble_hid_key_t pressed_keys)
 {
-	int err = 0;
-	uint8_t  data[INPUT_REPORT_KEYS_MAX_LEN];
-	uint8_t *key_data;
-	const uint8_t *key_state;
-	size_t n;
+	uint8_t data[INPUT_REPORT_CONSUMER_MAX_LEN];
+	int i, err;
 
-	data[0] = state->ctrl_keys_state;
-	data[1] = 0;
-	key_data = &data[2];
-	key_state = state->keys_state;
+	data[0] = pressed_keys;
+	
+	LOG_HEXDUMP_INF(data, INPUT_REPORT_CONSUMER_MAX_LEN, "Media data");
 
-	for (n = 0; n < KEY_PRESS_MAX; ++n) {
-		*key_data++ = *key_state++;
-	}
-
-	LOG_HEXDUMP_INF(data, INPUT_REPORT_KEYS_MAX_LEN, "Key data");
-	LOG_INF("Boot mode: %d", boot_mode);
-
-	if (boot_mode) {
-		err = bt_hids_boot_kb_inp_rep_send(&hids_obj, conn, data,
-							sizeof(data), NULL);
-	} else {
-		err = bt_hids_inp_rep_send(&hids_obj, conn,
-						INPUT_REP_KEYS_IDX, data,
-						sizeof(data), NULL);
-	}
-	return err;
-}
-
-static int media_report_con_send(const struct media_state *state, struct bt_conn *conn)
-{
-	int err = 0;
-	uint8_t data[CONSUMER_REPORT_MAX_LEN];
-
-	data[0] = state->report;
-
-	LOG_HEXDUMP_INF(data, INPUT_REPORT_KEYS_MAX_LEN, "Media data");
-
-	err = bt_hids_inp_rep_send(&hids_obj, conn, INPUT_REP_CONSUMER_IDX, data, sizeof(data), NULL);
-
-	return err;
-}
-
-static int media_report_send(void)
-{
-	for (size_t i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
+	for (i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
 		if (conn_mode[i].conn) {
 			if (conn_mode[i].in_boot_mode) {
 				LOG_WRN("Connection %d in boot mode, skipping media report", i);
 				continue;
 			}
 
-			int err;
-
-			err = media_report_con_send(&hid_media_state, conn_mode[i].conn);
+			err = bt_hids_inp_rep_send(&hids_obj, conn_mode[i].conn, INPUT_REP_CONSUMER_IDX, data, sizeof(data), NULL);
 
 			if (err) {
-				printk("Key report send error: %d\n", err);
+				LOG_ERR("Key report send error: %d\n", err);
 				return err;
 			}
 		}
 	}
+
 	return 0;
-}
-
-/** @brief Function process and send keyboard state to all active connections
- *
- * Function process global keyboard state and send it to all connected
- * clients.
- *
- * @return 0 on success or negative error code.
- */
-static int key_report_send(void)
-{
-	for (size_t i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
-		if (conn_mode[i].conn) {
-			int err;
-
-			err = key_report_con_send(&hid_keyboard_state,
-						  conn_mode[i].in_boot_mode,
-						  conn_mode[i].conn);
-			if (err) {
-				printk("Key report send error: %d\n", err);
-				return err;
-			}
-		}
-	}
-	return 0;
-}
-
-/** @brief Change key code to ctrl code mask
- *
- *  Function changes the key code to the mask in the control code
- *  field inside the raport.
- *  Returns 0 if key code is not a control key.
- *
- *  @param key Key code
- *
- *  @return Mask of the control key or 0.
- */
-static uint8_t button_ctrl_code(uint8_t key)
-{
-	if (KEY_CTRL_CODE_MIN <= key && key <= KEY_CTRL_CODE_MAX) {
-		return (uint8_t)(1U << (key - KEY_CTRL_CODE_MIN));
-	}
-	return 0;
-}
-
-
-static int hid_kbd_state_key_set(uint8_t key)
-{
-	uint8_t ctrl_mask = button_ctrl_code(key);
-
-	if (ctrl_mask) {
-		hid_keyboard_state.ctrl_keys_state |= ctrl_mask;
-		return 0;
-	}
-	for (size_t i = 0; i < KEY_PRESS_MAX; ++i) {
-		if (hid_keyboard_state.keys_state[i] == 0) {
-			hid_keyboard_state.keys_state[i] = key;
-			return 0;
-		}
-	}
-	/* All slots busy */
-	return -EBUSY;
-}
-
-
-static int hid_kbd_state_key_clear(uint8_t key)
-{
-	uint8_t ctrl_mask = button_ctrl_code(key);
-
-	if (ctrl_mask) {
-		hid_keyboard_state.ctrl_keys_state &= ~ctrl_mask;
-		return 0;
-	}
-	for (size_t i = 0; i < KEY_PRESS_MAX; ++i) {
-		if (hid_keyboard_state.keys_state[i] == key) {
-			hid_keyboard_state.keys_state[i] = 0;
-			return 0;
-		}
-	}
-	/* Key not found */
-	return -EINVAL;
-}
-
-/** @brief Press a button and send report
- *
- *  @note Functions to manipulate hid state are not reentrant
- *  @param keys
- *  @param cnt
- *
- *  @return 0 on success or negative error code.
- */
-static int hid_buttons_press(const uint8_t *keys, size_t cnt)
-{
-	while (cnt--) {
-		int err;
-
-		err = hid_kbd_state_key_set(*keys++);
-		if (err) {
-			printk("Cannot set selected key.\n");
-			return err;
-		}
-	}
-
-	return key_report_send();
-}
-
-/** @brief Release the button and send report
- *
- *  @note Functions to manipulate hid state are not reentrant
- *  @param keys
- *  @param cnt
- *
- *  @return 0 on success or negative error code.
- */
-static int hid_buttons_release(const uint8_t *keys, size_t cnt)
-{
-	while (cnt--) {
-		int err;
-
-		err = hid_kbd_state_key_clear(*keys++);
-		if (err) {
-			printk("Cannot clear selected key.\n");
-			return err;
-		}
-	}
-
-	return key_report_send();
-}
-
-static int press_button(uint8_t scancode)
-{
-	if (scancode > 0x65) {
-		switch (scancode) {
-			case 0x7f:
-				hid_media_state.report |= MEDIA_STATE_MUTE;
-				break;
-			case 0x80:
-				hid_media_state.report |= MEDIA_STATE_VOLUME_UP;
-				break;
-			case 0x81:
-				hid_media_state.report |= MEDIA_STATE_VOLUME_DOWN;
-				break;
-			case 0x82:
-				hid_media_state.report |= MEDIA_STATE_PLAY_PAUSE;
-				break;
-			default:
-				LOG_ERR("Unknown media scancode %d", scancode);
-				return 1;
-		}
-
-		return media_report_send();
-	} else {
-		return hid_buttons_press(&scancode, 1);
-	}
-}
-
-
-static int release_button(uint8_t scancode)
-{
-	if (scancode > 0x65) {
-		switch (scancode) {
-			case 0x7f:
-				hid_media_state.report &= ~(MEDIA_STATE_MUTE);
-				break;
-			case 0x80:
-				hid_media_state.report &= ~(MEDIA_STATE_VOLUME_UP);
-				break;
-			case 0x81:
-				hid_media_state.report &= ~(MEDIA_STATE_VOLUME_DOWN);
-				break;
-			case 0x82:
-				hid_media_state.report &= ~(MEDIA_STATE_PLAY_PAUSE);
-				break;
-			default:
-				LOG_ERR("Unknown media scancode %d", scancode);
-				return 1;
-		}
-
-		return media_report_send();
-	} else {
-		return hid_buttons_release(&scancode, 1);
-	}
 }
 
 static void num_comp_reply(bool accept)
@@ -858,10 +489,10 @@ static void num_comp_reply(bool accept)
 
 	if (accept) {
 		bt_conn_auth_passkey_confirm(conn);
-		printk("Numeric Match, conn %p\n", conn);
+		LOG_INF("Numeric Match, conn %p\n", conn);
 	} else {
 		bt_conn_auth_cancel(conn);
-		printk("Numeric Reject, conn %p\n", conn);
+		LOG_INF("Numeric Reject, conn %p\n", conn);
 	}
 
 	bt_conn_unref(pairing_data.conn);
@@ -871,78 +502,14 @@ static void num_comp_reply(bool accept)
 	}
 }
 
-int ble_init(void)
-{
-	int err;
-	
-	if (!gpio_is_ready_dt(&status_led)) {
-		return 1;
-	}
-
-	err = gpio_pin_configure_dt(&status_led, GPIO_OUTPUT_ACTIVE);
-
-	if (err < 0) {
-		printk("Failed to configure status LED gpio pin, err %d", err);
-		return 2;
-	}
-
-	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
-	if (err) {
-		printk("Failed to register authorization callbacks.\n");
-		return 0;
-	}
-
-	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
-	if (err) {
-		printk("Failed to register authorization info callbacks.\n");
-		return 0;
-	}
-
-	hid_init();
-
-	err = bt_enable(NULL);
-	if (err) {
-		printk("Bluetooth init failed (err %d)\n", err);
-		return 0;
-	}
-
-	printk("Bluetooth initialized\n");
-
-	if (IS_ENABLED(CONFIG_SETTINGS)) {
-		settings_load();
-	}
-
-	advertising_start();
-
-	k_work_init(&pairing_work, pairing_process);
-
-	return 0;
-}
-
-static int ble_thread(void)
-{
-	while (true) {
-		gpio_pin_set_dt(&status_led, 0);
-		k_msleep(is_adv ? 500 : 2000);
-
-		gpio_pin_set_dt(&status_led, 1);
-		k_msleep(100);
-	}
-
-    return 0;
-}
-
-K_MSGQ_DEFINE(keys_msgq, sizeof(ble_key_input_t), 10, 1);
-
 static void button_thread(void)
 {
     ble_key_input_t input;
 	k_timeout_t timeout = K_FOREVER;
-	uint8_t button;
 	int err;
 
     while (true) {
-        err = k_msgq_get(&keys_msgq, &input, timeout);
+        err = k_msgq_get(&input_queue, &input, timeout);
 
 		timeout = K_FOREVER;
 
@@ -955,27 +522,58 @@ static void button_thread(void)
 			}
 		}
 
-		if (input.pressed_mask == (0b11)) {
+		if (input.pressed_mask == (BLE_HID_KEY_VOLUME_UP | BLE_HID_KEY_VOLUME_DOWN)) {
 			timeout = K_SECONDS(3);
 			continue;
 		}
 
-		button = input.button;
-
-		if (input.button_pressed) {
-        	LOG_INF("Pressing key %02x", button);
-			press_button(button);
-		} else {
-       		LOG_INF("Releasing key %02x", button);
-			release_button(button);
-		}
+		media_report_send(input.pressed_mask);
     }
+}
+
+int ble_init(void)
+{
+	int err;
+
+	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
+
+	if (err) {
+		LOG_ERR("Failed to register authorization callbacks.\n");
+		return 0;
+	}
+
+	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
+
+	if (err) {
+		LOG_ERR("Failed to register authorization info callbacks.\n");
+		return 0;
+	}
+
+	hid_init();
+
+	err = bt_enable(NULL);
+
+	if (err) {
+		LOG_ERR("Bluetooth init failed (err %d)\n", err);
+		return 0;
+	}
+
+	LOG_INF("Bluetooth initialized\n");
+
+	if (IS_ENABLED(CONFIG_SETTINGS)) {
+		settings_load();
+	}
+
+	advertising_start();
+
+	k_work_init(&pairing_work, pairing_process);
+
+	return 0;
 }
 
 void ble_send_key_input(const ble_key_input_t *input)
 {
-    k_msgq_put(&keys_msgq, input, K_NO_WAIT);
+    k_msgq_put(&input_queue, input, K_NO_WAIT);
 }
 
 K_THREAD_DEFINE(button_thread_id, 2048, button_thread, NULL, NULL, NULL, 14, 0, 0);
-K_THREAD_DEFINE(ble_thread_id, 8192, ble_thread, NULL, NULL, NULL, 11, 0, 0);
