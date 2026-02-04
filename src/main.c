@@ -9,19 +9,23 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
-#include <nrf.h>
 
+#include "ble.h"
 #include "sense.h"
-
-#define LED_NODE		DT_ALIAS(led_pin)
 
 #define CALIBRATION_RUNS          10
 #define CALIBRATION_THRESHOLD     1.2
 #define DEBOUNCING_THRESHOLD      5
 
+#define KEY_PAUSE			0x0e
+#define KEY_MUTE			0x0f
+#define KEY_VOLUME_UP		0x0b
+#define KEY_VOLUME_DOWN		0x50
+
 typedef struct {
 	struct gpio_dt_spec led_gpio;
 	int analog_input;
+	uint8_t emulated_key;
 
     uint32_t threshold;
     uint8_t debouncing_streak;
@@ -30,26 +34,45 @@ typedef struct {
 
 static void sampling_thread(void);
 
-static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
-
 static touchpad_data_t touchpad_data[] = {
+	{
+		.led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios),
+		.analog_input = COMP_PSEL_PSEL_AnalogInput3,
+		.emulated_key = KEY_VOLUME_UP,
+	},
 	{
 		.led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios),
 		.analog_input = COMP_PSEL_PSEL_AnalogInput0,
+		.emulated_key = KEY_VOLUME_DOWN,
 	},
 	{
 		.led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios),
 		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
-	},
-	{
-		.led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios),
-		.analog_input = COMP_PSEL_PSEL_AnalogInput2,
+		.emulated_key = KEY_PAUSE,
 	},
 };
 
 K_THREAD_DEFINE(sampling_thread_id, 4096, sampling_thread, NULL, NULL, NULL, 10, 0, -1);
 
 LOG_MODULE_REGISTER(main);
+
+static void touchpad_state_changed(int index, const touchpad_data_t *data)
+{
+	static ble_key_input_t input = {0};
+
+	gpio_pin_set_dt(&data->led_gpio, data->pressed);
+
+	input.button = data->emulated_key;
+	input.button_pressed = data->pressed;
+
+	if (data->pressed) {
+		input.pressed_mask |= (1 << index);
+	} else {
+		input.pressed_mask &= ~(1 << index);
+	}
+
+	ble_send_key_input(&input);
+}
 
 static void sampling_thread(void)
 {
@@ -78,12 +101,12 @@ static void sampling_thread(void)
 				touch_detected = (delta_time > touchpad_data[i].threshold);
 
 				if (touchpad_data[i].pressed != touch_detected) {
-					LOG_INF("Debounce %s %d", touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
+					LOG_DBG("Debounce %d %s %d", i, touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
 					
 					if (++touchpad_data[i].debouncing_streak > DEBOUNCING_THRESHOLD) {
 						touchpad_data[i].debouncing_streak = 0;
 						touchpad_data[i].pressed = touch_detected;
-						gpio_pin_set_dt(&touchpad_data[i].led_gpio, touch_detected);
+						touchpad_state_changed(i, &touchpad_data[i]);
 					}
 				} else {
 					touchpad_data[i].debouncing_streak = 0;
@@ -114,15 +137,10 @@ int main(void)
 
 	LOG_INF("Start main");
 
-	if (!gpio_is_ready_dt(&status_led)) {
-		return 1;
-	}
+	err = ble_init();
 
-	err = gpio_pin_configure_dt(&status_led, GPIO_OUTPUT_ACTIVE);
-
-	if (err < 0) {
-		LOG_ERR("Failed to configure status LED gpio pin, err %d", err);
-		return 2;
+	if (err) {
+		LOG_ERR("Failed to init BLE, err %d", err);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(touchpad_data); ++i) {
@@ -144,14 +162,4 @@ int main(void)
 	NRF_POWER->TASKS_CONSTLAT = 1;
 
 	k_thread_start(sampling_thread_id);
-
-	LOG_INF("Main loop");
-
-	while (true) {
-		gpio_pin_set_dt(&status_led, 0);
-		k_msleep(2000);
-
-		gpio_pin_set_dt(&status_led, 1);
-		k_msleep(100);
-	}
 }

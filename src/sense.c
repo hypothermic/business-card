@@ -7,7 +7,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <nrf.h>
+#include <nrfx.h>
 
 K_SEM_DEFINE(sample_ready_sem, 0, 1);
 
