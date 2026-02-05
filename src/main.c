@@ -11,6 +11,7 @@
 
 #include "ble.h"
 #include "sense.h"
+#include "usbms.h"
 
 #define CALIBRATION_RUNS          10
 #define CALIBRATION_THRESHOLD     1.2
@@ -163,6 +164,12 @@ int main(void)
 	int err;
 
 	LOG_INF("Start main");
+
+	err = usbms_init();
+
+	if (err) {
+		LOG_ERR("Failed to init USB MS, err %d", err);
+	}
 
 	err = ble_init();
 
