@@ -21,6 +21,8 @@
 
 #include <bluetooth/services/hids.h>
 
+#include "led.h"
+
 #define BASE_USB_HID_SPEC_VERSION   		0x0101
 #define INPUT_REPORT_KEYS_MAX_LEN 			(1 + 1 + 6) // modifiers + reserved + keys[6]
 #define INPUT_REPORT_CONSUMER_MAX_LEN		1
@@ -60,6 +62,8 @@ struct pairing_data_mitm {
 	unsigned int passkey;
 };
 
+static bool alt_mode = false;
+
 K_MSGQ_DEFINE(mitm_queue, sizeof(struct pairing_data_mitm), CONFIG_BT_HIDS_MAX_CLIENT_COUNT, 4);
 K_MSGQ_DEFINE(input_queue, sizeof(ble_key_input_t), 10, 1);
 
@@ -93,10 +97,9 @@ static void advertising_start(void)
 
 static void pairing_process(struct k_work *work)
 {
-	int err;
 	struct pairing_data_mitm pairing_data;
-
 	char addr[BT_ADDR_LE_STR_LEN];
+	int err;
 
 	err = k_msgq_peek(&mitm_queue, &pairing_data);
 
@@ -104,11 +107,12 @@ static void pairing_process(struct k_work *work)
 		return;
 	}
 
-	bt_addr_le_to_str(bt_conn_get_dst(pairing_data.conn),
-			  addr, sizeof(addr));
+	bt_addr_le_to_str(bt_conn_get_dst(pairing_data.conn), addr, sizeof(addr));
 
 	LOG_INF("Passkey for %s: %06u", addr, pairing_data.passkey);
 	LOG_INF("Hold VOLUME UP + VOLUME DOWN simultaneously for 3 seconds to pair.");
+
+	led_blink(LED_INDEX_GREEN, K_FOREVER);
 }
 
 static void connected(struct bt_conn *conn, uint8_t err)
@@ -149,9 +153,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	int err;
 	bool is_any_dev_connected = false;
 	char addr[BT_ADDR_LE_STR_LEN];
+	int err;
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
@@ -176,8 +180,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	advertising_start();
 }
 
-static void security_changed(struct bt_conn *conn, bt_security_t level,
-			     enum bt_security_err err)
+static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
@@ -197,9 +200,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.security_changed = security_changed,
 };
 
-static void hids_outp_rep_handler(struct bt_hids_rep *rep,
-				  struct bt_conn *conn,
-				  bool write)
+static void hids_outp_rep_handler(struct bt_hids_rep *rep, struct bt_conn *conn, bool write)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
@@ -212,9 +213,7 @@ static void hids_outp_rep_handler(struct bt_hids_rep *rep,
 	LOG_INF("Output report has been received %s", addr);
 }
 
-static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
-					  struct bt_conn *conn,
-					  bool write)
+static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep, struct bt_conn *conn, bool write)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
@@ -227,8 +226,7 @@ static void hids_boot_kb_outp_rep_handler(struct bt_hids_rep *rep,
 	LOG_INF("Boot Keyboard Output report has been received %s", addr);
 }
 
-static void hids_pm_evt_handler(enum bt_hids_pm_evt evt,
-				struct bt_conn *conn)
+static void hids_pm_evt_handler(enum bt_hids_pm_evt evt, struct bt_conn *conn)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 	size_t i;
@@ -415,6 +413,8 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	LOG_INF("Pairing completed: %s, bonded: %d", addr, bonded);
+	
+	led_blink(LED_INDEX_GREEN, LED_LONG_BLINK_DURATION);
 }
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
@@ -435,6 +435,10 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 	LOG_ERR("Pairing failed conn: %s, reason %d %s",
 		    addr, reason, bt_security_err_to_str(reason));
+
+	
+	led_blink(LED_INDEX_GREEN, K_NO_WAIT);
+	led_blink(LED_INDEX_RED,   LED_LONG_BLINK_DURATION);
 }
 
 static struct bt_conn_auth_cb conn_auth_callbacks = {
@@ -448,14 +452,9 @@ static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_failed = pairing_failed
 };
 
-static int media_report_send(ble_hid_key_t pressed_keys)
+static int send_report_to_clients(uint8_t report_index, const uint8_t *data, size_t len)
 {
-	uint8_t data[INPUT_REPORT_CONSUMER_MAX_LEN];
 	int i, err;
-
-	data[0] = pressed_keys;
-	
-	LOG_HEXDUMP_INF(data, INPUT_REPORT_CONSUMER_MAX_LEN, "Media controls report");
 
 	for (i = 0; i < CONFIG_BT_HIDS_MAX_CLIENT_COUNT; i++) {
 		if (conn_mode[i].conn) {
@@ -464,7 +463,7 @@ static int media_report_send(ble_hid_key_t pressed_keys)
 				continue;
 			}
 
-			err = bt_hids_inp_rep_send(&hids_obj, conn_mode[i].conn, INPUT_REP_CONSUMER_IDX, data, sizeof(data), NULL);
+			err = bt_hids_inp_rep_send(&hids_obj, conn_mode[i].conn, report_index, data, len, NULL);
 
 			if (err) {
 				LOG_ERR("Key report send error: %d", err);
@@ -474,6 +473,42 @@ static int media_report_send(ble_hid_key_t pressed_keys)
 	}
 
 	return 0;
+}
+
+static int navigation_report_send(ble_hid_key_t pressed_keys)
+{
+	uint8_t data[INPUT_REPORT_KEYS_MAX_LEN] = {0};
+
+	if (pressed_keys & BLE_HID_KEY_VOLUME_UP) {
+		data[2] = 0x52; // up
+	}
+	
+	if (pressed_keys & BLE_HID_KEY_VOLUME_DOWN) {
+		data[3] = 0x51; // down
+	}
+	
+	if (pressed_keys & BLE_HID_KEY_PLAYPAUSE) {
+		data[4] = 0x50; // left
+	}
+	
+	if (pressed_keys & BLE_HID_KEY_MUTE) {
+		data[5] = 0x4f; // right
+	}
+	
+	LOG_HEXDUMP_INF(data, INPUT_REPORT_KEYS_MAX_LEN, "Navigation report data");
+
+	return send_report_to_clients(INPUT_REP_KEYS_IDX, data, sizeof(data));
+}
+
+static int media_report_send(ble_hid_key_t pressed_keys)
+{
+	uint8_t data[INPUT_REPORT_CONSUMER_MAX_LEN];
+
+	data[0] = pressed_keys;
+	
+	LOG_HEXDUMP_INF(data, INPUT_REPORT_CONSUMER_MAX_LEN, "Media controls report");
+
+	return send_report_to_clients(INPUT_REP_CONSUMER_IDX, data, sizeof(data));
 }
 
 static void num_comp_reply(bool accept)
@@ -502,7 +537,7 @@ static void num_comp_reply(bool accept)
 	}
 }
 
-static void button_thread(void)
+static void input_thread(void)
 {
     ble_key_input_t input;
 	k_timeout_t timeout = K_FOREVER;
@@ -514,12 +549,23 @@ static void button_thread(void)
 		timeout = K_FOREVER;
 
 		if (err == -EAGAIN) {
-			LOG_WRN("Accept pairing");
+			if (input.pressed_mask == BLE_HID_KEY_PLAYPAUSE) {
+				LOG_WRN("Switch to %s mode", alt_mode ? "media" : "nav");
 
-			if (k_msgq_num_used_get(&mitm_queue)) {
-				num_comp_reply(true);
-				continue;
+				alt_mode ^= 1;
+
+				navigation_report_send(0);
+				media_report_send(0);
+
+				led_blink(LED_INDEX_GREEN, LED_SHORT_BLINK_DURATION);
+			} else {
+				LOG_WRN("Accept pairing");
+
+				if (k_msgq_num_used_get(&mitm_queue)) {
+					num_comp_reply(true);
+				}
 			}
+			continue;
 		}
 
 		if (input.pressed_mask == (BLE_HID_KEY_VOLUME_UP | BLE_HID_KEY_VOLUME_DOWN)) {
@@ -527,7 +573,16 @@ static void button_thread(void)
 			continue;
 		}
 
-		media_report_send(input.pressed_mask);
+		if (input.pressed_mask == (BLE_HID_KEY_PLAYPAUSE)) {
+			timeout = K_SECONDS(3);
+			LOG_ERR("Await timeout");
+		}
+
+		if (alt_mode) {
+			navigation_report_send(input.pressed_mask);
+		} else {
+			media_report_send(input.pressed_mask);
+		}
     }
 }
 
@@ -576,4 +631,4 @@ void ble_send_key_input(const ble_key_input_t *input)
     k_msgq_put(&input_queue, input, K_NO_WAIT);
 }
 
-K_THREAD_DEFINE(button_thread_id, 2048, button_thread, NULL, NULL, NULL, 14, 0, 0);
+K_THREAD_DEFINE(input_thread_id, 2048, input_thread, NULL, NULL, NULL, 14, 0, 0);

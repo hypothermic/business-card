@@ -11,6 +11,8 @@ target_sources(
         src/ble.c
         src/usbms.c
         src/sample_usbd_init.c
+        src/ble.c
+        src/led.c
 )
 
 set(gen_dir ${ZEPHYR_BINARY_DIR}/include/generated/)

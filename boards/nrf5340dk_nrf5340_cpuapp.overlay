@@ -1,6 +1,8 @@
 / {
 	aliases {
-		led-pin = &led2;
+		red-led = &led0;
+		green-led = &led1;
+		blue-led = &led3;
 	};
 
 	chosen {
