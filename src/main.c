@@ -14,9 +14,10 @@
 #include "sense.h"
 #include "usbms.h"
 
-#define CALIBRATION_RUNS          10
-#define CALIBRATION_THRESHOLD     1.2
-#define DEBOUNCING_THRESHOLD      5
+#define CALIBRATION_RUNS            10
+#define CALIBRATION_THRESHOLD       1.2
+#define DEBOUNCING_THRESHOLD        5
+#define MAX_SAMPLE_RETRIES          5
 
 typedef struct {
 	int analog_input;
@@ -28,6 +29,24 @@ typedef struct {
 } touchpad_data_t;
 
 static touchpad_data_t touchpad_data[] = {
+#if CONFIG_BOARD_MBC10
+	{
+		.analog_input = COMP_PSEL_PSEL_AnalogInput0,
+		.emulated_key = BLE_HID_KEY_PLAYPAUSE,
+	},
+	{
+		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
+		.emulated_key = BLE_HID_KEY_VOLUME_UP,
+	},
+	{
+		.analog_input = COMP_PSEL_PSEL_AnalogInput3,
+		.emulated_key = BLE_HID_KEY_VOLUME_DOWN,
+	},
+	{
+		.analog_input = COMP_PSEL_PSEL_AnalogInput5,
+		.emulated_key = BLE_HID_KEY_MUTE,
+	},
+#else
 	{
 		.analog_input = COMP_PSEL_PSEL_AnalogInput3,
 		.emulated_key = BLE_HID_KEY_VOLUME_UP,
@@ -40,6 +59,7 @@ static touchpad_data_t touchpad_data[] = {
 		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
 		.emulated_key = BLE_HID_KEY_PLAYPAUSE,
 	},
+#endif
 };
 
 static void sampling_thread(void);
@@ -62,7 +82,10 @@ static void touchpad_state_changed(int index, const touchpad_data_t *data)
 	}
 
 	ble_send_key_input(&input);
-	led_blink(LED_INDEX_BLUE, LED_SHORT_BLINK_DURATION);
+
+	if (data->pressed) {
+		led_blink(LED_INDEX_BLUE, LED_SHORT_BLINK_DURATION);
+	}
 }
 
 static void sampling_thread(void)
@@ -71,6 +94,7 @@ static void sampling_thread(void)
 	bool touch_detected;
 	int calibration_rounds_remaining = CALIBRATION_RUNS;
 	int i;
+	int retry = 0;
 	int err;
 
 	LOG_INF("Start sampling thread");
@@ -86,9 +110,15 @@ static void sampling_thread(void)
 			err = sense_pin(touchpad_data[i].analog_input, &delta_time);
 
 			if (err) {
+				if (retry++ < MAX_SAMPLE_RETRIES) {
+					i -= 1;
+					continue;
+				}
+
 				LOG_ERR("Failed to sample analog pin, err %d", err);
-				continue;
 			}
+
+			retry = 0;
 
 			if (calibration_rounds_remaining) {
 				touchpad_data[i].threshold += delta_time;
@@ -96,7 +126,7 @@ static void sampling_thread(void)
 				touch_detected = (delta_time > touchpad_data[i].threshold);
 
 				if (touchpad_data[i].pressed != touch_detected) {
-					LOG_DBG("Debounce %d %s %d", i, touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
+					LOG_INF("Debounce %d %s %d", i, touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
 					
 					if (++touchpad_data[i].debouncing_streak > DEBOUNCING_THRESHOLD) {
 						touchpad_data[i].debouncing_streak = 0;
@@ -154,4 +184,6 @@ int main(void)
 	k_thread_start(sampling_thread_id);
 	
 	LOG_INF("Startup complete");
+
+	led_blink(LED_INDEX_GREEN, LED_NORMAL_BLINK_DURATION);
 }

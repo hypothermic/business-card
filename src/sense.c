@@ -13,17 +13,21 @@ K_SEM_DEFINE(sample_ready_sem, 0, 1);
 
 LOG_MODULE_REGISTER(sense);
 
-static void sample_ready_isr(void *arg)
+ISR_DIRECT_DECLARE(sample_ready_isr)
 {
-	ARG_UNUSED(arg);
-
 	if (NRF_COMP->EVENTS_CROSS) {
 		NRF_COMP->EVENTS_CROSS = 0;
 
 		LOG_DBG("Cross");
 
 		k_sem_give(&sample_ready_sem);
+		
+		ISR_DIRECT_PM();
+		return 1;
 	}
+	
+	ISR_DIRECT_PM();
+	return 0;
 }
 
 static void timer_overrun_isr(void *arg)
@@ -34,7 +38,7 @@ static void timer_overrun_isr(void *arg)
 		NRF_TIMER1->EVENTS_COMPARE[1] = 0;
 		NRF_TIMER1->TASKS_STOP = 1;
 		
-		LOG_DBG("Timer overrun!");
+		LOG_ERR("Timer overrun!");
 	}
 }
 
@@ -53,14 +57,14 @@ int sense_pin(int pin, uint32_t *value)
 
 	// Await two COMP crossings before the wave period is in timer capture compare register
 
-	err = k_sem_take(&sample_ready_sem, K_MSEC(2));
+	err = k_sem_take(&sample_ready_sem, K_MSEC(5));
 
     if (err) {
         LOG_ERR("Failed to capture first crossing, err %d", err);
         return 2;
     }
 
-	err = k_sem_take(&sample_ready_sem, K_MSEC(2));
+	err = k_sem_take(&sample_ready_sem, K_MSEC(5));
 
     if (err) {
         LOG_ERR("Failed to capture second crossing, err %d", err);
@@ -106,7 +110,7 @@ int sense_init(void)
 	NRF_DPPIC->SUBSCRIBE_CHG[1].EN  = (0 << DPPIC_SUBSCRIBE_CHG_EN_CHIDX_Pos)  | DPPIC_SUBSCRIBE_CHG_EN_EN_Msk;
 	NRF_DPPIC->SUBSCRIBE_CHG[1].DIS = (1 << DPPIC_SUBSCRIBE_CHG_DIS_CHIDX_Pos) | DPPIC_SUBSCRIBE_CHG_DIS_EN_Msk;
 
-	IRQ_CONNECT(COMP_LPCOMP_IRQn, 3, sample_ready_isr, NULL, 0);
+	IRQ_DIRECT_CONNECT(COMP_LPCOMP_IRQn, 3, sample_ready_isr, 0);
 	irq_enable(COMP_LPCOMP_IRQn);
 
 	IRQ_CONNECT(TIMER1_IRQn, 3, timer_overrun_isr, NULL, 0);

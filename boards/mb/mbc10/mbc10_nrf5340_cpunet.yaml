@@ -1,0 +1,10 @@
+identifier: mbc10/nrf5340/cpunet
+name: Business Card v1.0
+vendor: mb
+type: mcu
+arch: arm
+ram: 64
+flash: 256
+toolchain:
+  - zephyr
+supported: []

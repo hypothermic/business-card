@@ -39,6 +39,7 @@ Do not touch other buttons during this time.
 ================================================================================
 
 The Green LED blinks...
+    -  once after startup.
     -  twice per second when a pairing request is pending.
     -  once when pairing was successful.
 

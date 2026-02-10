@@ -1,0 +1,10 @@
+identifier: mbc10/nrf5340/cpuapp
+name: Business Card v1.0
+vendor: mb
+type: mcu
+arch: arm
+ram: 448
+flash: 1024
+toolchain:
+  - zephyr
+supported: []

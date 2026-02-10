@@ -9,6 +9,7 @@
 #include <zephyr/drivers/gpio.h>
 
 #define LED_SHORT_BLINK_DURATION    K_MSEC(100)
+#define LED_NORMAL_BLINK_DURATION   K_MSEC(500)
 #define LED_LONG_BLINK_DURATION     K_MSEC(2000)
 
 typedef enum {

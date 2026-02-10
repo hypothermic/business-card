@@ -1,0 +1,17 @@
+/dts-v1/;
+#include <nordic/nrf5340_cpuappns_qkaa.dtsi>
+#include "mbc10-pinctrl.dtsi"
+
+/ {
+	model = "Business Card v1.0 (CPUAPP Non-Secure)";
+	compatible = "mb,mbc10-cpuapp-ns";
+
+	chosen {
+		zephyr,sram = &sram0_ns;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_ns_partition;
+	};
+};
+
+#include "mbc10-cpuapp_partitioning.dtsi"
+#include "mbc10-shared_sram.dtsi"
