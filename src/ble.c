@@ -546,10 +546,12 @@ static void input_thread(void)
     while (true) {
         err = k_msgq_get(&input_queue, &input, timeout);
 
+		LOG_INF("Mq get %d", err);
+
 		timeout = K_FOREVER;
 
 		if (err == -EAGAIN) {
-			if (input.pressed_mask == BLE_HID_KEY_PLAYPAUSE) {
+			if (input.pressed_mask == BLE_HID_KEY_MUTE) {
 				LOG_WRN("Switch to %s mode", alt_mode ? "media" : "nav");
 
 				alt_mode ^= 1;
@@ -568,12 +570,14 @@ static void input_thread(void)
 			continue;
 		}
 
+		LOG_INF("Pressed mask: %d");
+
 		if (input.pressed_mask == (BLE_HID_KEY_VOLUME_UP | BLE_HID_KEY_VOLUME_DOWN)) {
 			timeout = K_SECONDS(3);
 			continue;
 		}
 
-		if (input.pressed_mask == (BLE_HID_KEY_PLAYPAUSE)) {
+		if (input.pressed_mask == BLE_HID_KEY_MUTE) {
 			timeout = K_SECONDS(3);
 			LOG_ERR("Await timeout");
 		}

@@ -31,7 +31,7 @@ The device's mode dictates which keystroke is sent when a button is tapped.
         - Play/Pause is remapped to Left
         - Mute is remapped to Right
 
-To switch between modes, press and hold the 'Play/Pause' button for 5 seconds.
+To switch between modes, press and hold the 'Mute' button for 5 seconds.
 Do not touch other buttons during this time.
 
 ================================================================================
@@ -39,9 +39,10 @@ Do not touch other buttons during this time.
 ================================================================================
 
 The Green LED blinks...
-    -  once after startup.
-    -  twice per second when a pairing request is pending.
-    -  once when pairing was successful.
+    - once after startup.
+    - twice per second when a pairing request is pending.
+    - once when pairing was successful.
+    - once when the button mode is switched.
 
 The Red LED indicates that a device has disconnected. (gracefully or not)
 

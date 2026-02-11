@@ -15,7 +15,7 @@
 #include "usbms.h"
 
 #define CALIBRATION_RUNS            10
-#define CALIBRATION_THRESHOLD       1.2
+#define CALIBRATION_THRESHOLD       1.75
 #define DEBOUNCING_THRESHOLD        5
 #define MAX_SAMPLE_RETRIES          5
 
@@ -35,12 +35,12 @@ static touchpad_data_t touchpad_data[] = {
 		.emulated_key = BLE_HID_KEY_PLAYPAUSE,
 	},
 	{
-		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
-		.emulated_key = BLE_HID_KEY_VOLUME_UP,
-	},
-	{
 		.analog_input = COMP_PSEL_PSEL_AnalogInput3,
 		.emulated_key = BLE_HID_KEY_VOLUME_DOWN,
+	},
+	{
+		.analog_input = COMP_PSEL_PSEL_AnalogInput1,
+		.emulated_key = BLE_HID_KEY_VOLUME_UP,
 	},
 	{
 		.analog_input = COMP_PSEL_PSEL_AnalogInput5,
@@ -80,6 +80,8 @@ static void touchpad_state_changed(int index, const touchpad_data_t *data)
 	} else {
 		input.pressed_mask &= ~(data->emulated_key);
 	}
+
+	LOG_INF("State change %d %02x", input.button, input.pressed_mask);
 
 	ble_send_key_input(&input);
 
@@ -126,7 +128,7 @@ static void sampling_thread(void)
 				touch_detected = (delta_time > touchpad_data[i].threshold);
 
 				if (touchpad_data[i].pressed != touch_detected) {
-					LOG_INF("Debounce %d %s %d", i, touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
+					LOG_DBG("Debounce %d %s %d", i, touch_detected ? "up" : "down", touchpad_data[i].debouncing_streak);
 					
 					if (++touchpad_data[i].debouncing_streak > DEBOUNCING_THRESHOLD) {
 						touchpad_data[i].debouncing_streak = 0;
@@ -176,12 +178,11 @@ int main(void)
 
 	err = sense_init();
 
-	if (err) {
+	if (!err) {
+		k_thread_start(sampling_thread_id);
+	} else {
 		LOG_ERR("Failed to init sampling thread, err %d", err);
-		return 3;
 	}
-	
-	k_thread_start(sampling_thread_id);
 	
 	LOG_INF("Startup complete");
 

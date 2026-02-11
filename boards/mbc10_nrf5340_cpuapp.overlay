@@ -46,7 +46,7 @@
 };
 
 &vregh {
-	status = "okay";
+	status = "disabled";
 };
 
 &lfxo {
@@ -79,4 +79,8 @@ zephyr_udc0: &usbd {
 
 &nfct {
     status = "disabled";
+};
+
+&uicr {
+	nfct-pins-as-gpios;
 };
