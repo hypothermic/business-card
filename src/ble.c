@@ -546,8 +546,6 @@ static void input_thread(void)
     while (true) {
         err = k_msgq_get(&input_queue, &input, timeout);
 
-		LOG_INF("Mq get %d", err);
-
 		timeout = K_FOREVER;
 
 		if (err == -EAGAIN) {
@@ -569,8 +567,6 @@ static void input_thread(void)
 			}
 			continue;
 		}
-
-		LOG_INF("Pressed mask: %d");
 
 		if (input.pressed_mask == (BLE_HID_KEY_VOLUME_UP | BLE_HID_KEY_VOLUME_DOWN)) {
 			timeout = K_SECONDS(3);

@@ -60,7 +60,7 @@ int sense_pin(int pin, uint32_t *value)
 	err = k_sem_take(&sample_ready_sem, K_MSEC(5));
 
     if (err) {
-        LOG_ERR("Failed to capture first crossing, err %d", err);
+        LOG_DBG("Failed to capture first crossing, err %d", err);
         return 2;
     }
 

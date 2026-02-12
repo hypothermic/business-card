@@ -14,9 +14,9 @@
 #include "sense.h"
 #include "usbms.h"
 
-#define CALIBRATION_RUNS            10
-#define CALIBRATION_THRESHOLD       1.75
-#define DEBOUNCING_THRESHOLD        5
+#define CALIBRATION_RUNS            8
+#define CALIBRATION_THRESHOLD       1.7
+#define DEBOUNCING_THRESHOLD        4
 #define MAX_SAMPLE_RETRIES          5
 
 typedef struct {
@@ -104,12 +104,16 @@ static void sampling_thread(void)
 	while (true) {
 		NRF_POWER->TASKS_CONSTLAT = 0;
 
-		k_sleep(K_MSEC(6));
+		k_sleep(K_MSEC(9));
 		
 		NRF_POWER->TASKS_CONSTLAT = 1;
 
 		for (i = 0; i < ARRAY_SIZE(touchpad_data); ++i) {
 			err = sense_pin(touchpad_data[i].analog_input, &delta_time);
+
+			if (delta_time < 20 || delta_time > 2000) {
+				err = 69;
+			}
 
 			if (err) {
 				if (retry++ < MAX_SAMPLE_RETRIES) {
@@ -149,9 +153,14 @@ static void sampling_thread(void)
 			if (!calibration_rounds_remaining) {
 				
 				for (i = 0; i < ARRAY_SIZE(touchpad_data); ++i) {
+					uint32_t prev = touchpad_data[i].threshold;
 					touchpad_data[i].threshold /= CALIBRATION_RUNS;
 					touchpad_data[i].threshold *= CALIBRATION_THRESHOLD;
-					LOG_INF("Threshold of touchpad %d set at %d", i, touchpad_data[i].threshold);
+					LOG_INF("Threshold of touchpad %d prev=%d set at %d", i, prev, touchpad_data[i].threshold);
+
+					if (touchpad_data[i].threshold < 0 || touchpad_data[i].threshold > 2000) {
+						touchpad_data[i].threshold = 250;
+					}
 				}
 			}
 		}
